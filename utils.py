@@ -1,7 +1,8 @@
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
+
 
 # code for kNN prediction from here:
 # https://colab.research.google.com/github/facebookresearch/moco/blob/colab-notebook/colab/moco_cifar10_demo.ipynb
@@ -47,6 +48,7 @@ class BenchmarkModule(pl.LightningModule):
     We can access the highest accuracy during a kNN prediction using the 
     max_accuracy attribute.
     """
+
     def __init__(self, dataloader_kNN, gpus, classes, knn_k, knn_t):
         super().__init__()
         self.backbone = nn.Module()
@@ -82,11 +84,12 @@ class BenchmarkModule(pl.LightningModule):
             images, targets, _ = batch
             feature = self.backbone(images).squeeze()
             feature = F.normalize(feature, dim=1)
-            pred_labels = knn_predict(feature, self.feature_bank, self.targets_bank, self.classes, self.knn_k, self.knn_t)
+            pred_labels = knn_predict(feature, self.feature_bank, self.targets_bank, self.classes, self.knn_k,
+                                      self.knn_t)
             num = images.size(0)
             top1 = (pred_labels[:, 0] == targets).float().sum().item()
             return (num, top1)
-    
+
     def validation_epoch_end(self, outputs):
         if outputs:
             total_num = 0

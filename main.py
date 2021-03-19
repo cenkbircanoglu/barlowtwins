@@ -1,26 +1,24 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision
-import numpy as np
-import pytorch_lightning as pl
 import lightly
-from loss import BarlowTwinsLoss
+import pytorch_lightning as pl
+import torch
+import torchvision
 
-from utils import knn_predict, BenchmarkModule
+from loss import BarlowTwinsLoss
+from resnet50 import resnet50
+from utils import BenchmarkModule
 
 num_workers = 8
 max_epochs = 800
 knn_k = 200
 knn_t = 0.1
 classes = 10
-batch_size = 512
-seed=1
+batch_size = 256
+seed = 1
 
 pl.seed_everything(seed)
 
 # use a GPU if available
-gpus = 1 if torch.cuda.is_available() else 0
+gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 device = 'cuda' if gpus else 'cpu'
 
 # Use SimCLR augmentations, additionally, disable blur
@@ -78,31 +76,25 @@ dataloader_test = torch.utils.data.DataLoader(
 )
 
 
-
 class BartonTwins(BenchmarkModule):
     def __init__(self, dataloader_kNN, gpus, classes, knn_k, knn_t):
         super().__init__(dataloader_kNN, gpus, classes, knn_k, knn_t)
         # create a ResNet backbone and remove the classification head
-        resnet = lightly.models.ResNetGenerator('resnet-18')
-        self.backbone = nn.Sequential(
-            *list(resnet.children())[:-1],
-            nn.AdaptiveAvgPool2d(1),
-        )
+
+        self.backbone = resnet50(pretrained=False)
         # create a simsiam model based on ResNet
         # note that bartontwins has the same architecture
-        self.resnet_simsiam = \
-            lightly.models.SimSiam(self.backbone, num_ftrs=512, num_mlp_layers=3)
+        self.resnet_simsiam = lightly.models.SimSiam(self.backbone, num_ftrs=2048, num_mlp_layers=3
+                                                     # , out_dim=8192
+                                                     )
         self.criterion = BarlowTwinsLoss(device=device)
-            
+
     def forward(self, x):
         self.resnet_simsiam(x)
 
     def training_step(self, batch, batch_idx):
         (x0, x1), _, _ = batch
-        x0, x1 = self.resnet_simsiam(x0, x1)
-        # our simsiam model returns both (features + projection head)
-        z_a, _ = x0
-        z_b, _ = x1
+        (z_a, _), (z_b, _) = self.resnet_simsiam(x0, x1)
         loss = self.criterion(z_a, z_b)
         self.log('train_loss_ssl', loss)
         return loss
@@ -116,7 +108,7 @@ class BartonTwins(BenchmarkModule):
                         optimizer_closure=None,
                         on_tpu=None,
                         using_native_amp=None,
-                        using_lbfgs=None):        
+                        using_lbfgs=None):
         # 120 steps ~ 1 epoch
         if self.trainer.global_step < 1000:
             lr_scale = min(1., float(self.trainer.global_step + 1) / 1000.)
@@ -136,8 +128,9 @@ class BartonTwins(BenchmarkModule):
 
 model = BartonTwins(dataloader_train_kNN, gpus=gpus, classes=classes, knn_k=knn_k, knn_t=knn_t)
 
+print(model)
 trainer = pl.Trainer(max_epochs=max_epochs, gpus=gpus,
-                    progress_bar_refresh_rate=100)
+                     progress_bar_refresh_rate=100)
 trainer.fit(
     model,
     train_dataloader=dataloader_train_ssl,

@@ -1,2 +1,3 @@
 lightly==1.0.8
 torch
+hydra-core

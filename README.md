@@ -24,6 +24,14 @@ This is currently a work in progress. The code is a modified version of the SimS
 - PyTorch Lightning
 - Torchvision
 - lightly
+- hydra-core
+
+### Train
+
+```bash
+python main.py --config-name={config-file}
+```
+
 
 ### Benchmarks
 We benchmark the BarlowTwins model on the CIFAR-10 dataset following the KNN evaluation protocol. Currently, the best effort achieved a test accuracy of 84.7%.

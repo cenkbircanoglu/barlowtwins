@@ -1,0 +1,10 @@
+num_workers: 32
+max_epochs: 800
+knn_k: 200
+knn_t: 0.1
+classes: 10
+batch_size: 1024
+seed: 1
+dataset_name: cifar10
+backbone: dilated-resnet-50
+num_ftrs: 2048

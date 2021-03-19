@@ -1,19 +1,23 @@
+from multiprocessing import cpu_count
+
+import hydra
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import torchvision
-from lightly import data as lightly_data, models
-from torch.utils.data import DataLoader
+from lightly import models
+from omegaconf import DictConfig
 
+from datasets import dataset_loader
 from loss import BarlowTwinsLoss
+from models.resnet50 import resnet50
 from utils import BenchmarkModule
 
-num_workers = 8
+num_workers = cpu_count() // 2
 max_epochs = 800
 knn_k = 200
 knn_t = 0.1
 classes = 10
-batch_size = 512
+batch_size = 1024
 seed = 1
 
 pl.seed_everything(seed)
@@ -22,74 +26,14 @@ pl.seed_everything(seed)
 gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 device = 'cuda' if gpus else 'cpu'
 
-# Use SimCLR augmentations, additionally, disable blur
-collate_fn = lightly_data.SimCLRCollateFunction(
-    input_size=32,
-    gaussian_blur=0.,
-)
-
-# No additional augmentations for the test set
-test_transforms = torchvision.transforms.Compose([
-    torchvision.transforms.ToTensor(),
-    torchvision.transforms.Normalize(
-        mean=lightly_data.collate.imagenet_normalize['mean'],
-        std=lightly_data.collate.imagenet_normalize['std'],
-    )
-])
-
-dataset_train_ssl = lightly_data.LightlyDataset.from_torch_dataset(
-    torchvision.datasets.CIFAR10(
-        root='data',
-        train=True,
-        download=True))
-dataset_train_kNN = lightly_data.LightlyDataset.from_torch_dataset(torchvision.datasets.CIFAR10(
-    root='data',
-    train=True,
-    transform=test_transforms,
-    download=True))
-dataset_test = lightly_data.LightlyDataset.from_torch_dataset(torchvision.datasets.CIFAR10(
-    root='data',
-    train=False,
-    transform=test_transforms,
-    download=True))
-
-dataloader_train_ssl = DataLoader(
-    dataset_train_ssl,
-    batch_size=batch_size,
-    shuffle=True,
-    collate_fn=collate_fn,
-    drop_last=True,
-    num_workers=num_workers
-)
-dataloader_train_kNN = DataLoader(
-    dataset_train_kNN,
-    batch_size=batch_size,
-    shuffle=False,
-    drop_last=False,
-    num_workers=num_workers
-)
-dataloader_test = DataLoader(
-    dataset_test,
-    batch_size=batch_size,
-    shuffle=False,
-    drop_last=False,
-    num_workers=num_workers
-)
-
 
 class BartonTwins(BenchmarkModule):
-    def __init__(self, dataloader_kNN, gpus, classes, knn_k, knn_t):
+    def __init__(self, dataloader_kNN, gpus, classes, knn_k, knn_t, num_ftrs=512, backbone=None):
         super().__init__(dataloader_kNN, gpus, classes, knn_k, knn_t)
-        # create a ResNet backbone and remove the classification head
-        resnet = models.ResNetGenerator('resnet-18')
-        self.backbone = nn.Sequential(
-            *list(resnet.children())[:-1],
-            nn.AdaptiveAvgPool2d(1),
-        )
+        self.backbone = backbone
         # create a simsiam model based on ResNet
         # note that bartontwins has the same architecture
-        self.resnet_simsiam = \
-            models.SimSiam(self.backbone, num_ftrs=512, num_mlp_layers=3)
+        self.resnet_simsiam = models.SimSiam(self.backbone, num_ftrs=num_ftrs, num_mlp_layers=3)
         self.criterion = BarlowTwinsLoss(device=device)
 
     def forward(self, x):
@@ -97,10 +41,8 @@ class BartonTwins(BenchmarkModule):
 
     def training_step(self, batch, batch_idx):
         (x0, x1), _, _ = batch
-        x0, x1 = self.resnet_simsiam(x0, x1)
+        (z_a, _), (z_b, _) = self.resnet_simsiam(x0, x1)
         # our simsiam model returns both (features + projection head)
-        z_a, _ = x0
-        z_b, _ = x1
         loss = self.criterion(z_a, z_b)
         self.log('train_loss_ssl', loss)
         return loss
@@ -132,14 +74,37 @@ class BartonTwins(BenchmarkModule):
         return [optim], [scheduler]
 
 
-model = BartonTwins(dataloader_train_kNN, gpus=gpus, classes=classes, knn_k=knn_k, knn_t=knn_t)
+def get_backbone(name):
+    if name in ['resnet-18', 'resnet-50']:
+        resnet = models.ResNetGenerator(name)
+        return nn.Sequential(
+            *list(resnet.children())[:-1],
+            nn.AdaptiveAvgPool2d(1),
+        )
+    if name == 'dilated-resnet-50':
+        return resnet50(pretrained=False)
 
-trainer = pl.Trainer(max_epochs=max_epochs, gpus=gpus,
-                     progress_bar_refresh_rate=100)
-trainer.fit(
-    model,
-    train_dataloader=dataloader_train_ssl,
-    val_dataloaders=dataloader_test
-)
 
-print(f'Highest test accuracy: {model.max_accuracy:.4f}')
+@hydra.main(config_path='./conf', config_name="resnet_18")
+def run_app(cfg: DictConfig) -> None:
+    dataloader_train_ssl, dataloader_train_kNN, dataloader_test = dataset_loader(name=cfg.dataset_name,
+                                                                                 batch_size=cfg.batch_size,
+                                                                                 num_workers=cfg.batch_size)
+    backbone = get_backbone(cfg.backbone_name)
+    model = BartonTwins(dataloader_train_kNN, gpus=gpus, classes=classes, knn_k=knn_k, knn_t=knn_t,
+                        num_ftrs=cfg.num_ftrs, backbone=backbone)
+    print(model)
+    trainer = pl.Trainer(max_epochs=max_epochs, gpus=gpus,
+                         progress_bar_refresh_rate=100)
+    trainer.fit(
+        model,
+        train_dataloader=dataloader_train_ssl,
+        val_dataloaders=dataloader_test,
+    )
+    trainer.save_checkpoint('trainer.pth')
+
+    print(f'Highest test accuracy: {model.max_accuracy:.4f}')
+
+
+if __name__ == '__main__':
+    run_app()

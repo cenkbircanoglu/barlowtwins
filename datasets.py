@@ -1,11 +1,11 @@
 import torchvision
-from lightly import data as lightly_data
+from lightly.data import LightlyDataset, collate, SimCLRCollateFunction
 from torch.utils.data import DataLoader
 
 
-def dataset_loader(name='cifar10', batch_size=256, num_workers=0):
+def dataset_loader(name='cifar10', batch_size=256, num_workers=0, data_root='./data'):
     # Use SimCLR augmentations, additionally, disable blur
-    collate_fn = lightly_data.SimCLRCollateFunction(
+    collate_fn = SimCLRCollateFunction(
         input_size=32,
         gaussian_blur=0.,
     )
@@ -14,31 +14,39 @@ def dataset_loader(name='cifar10', batch_size=256, num_workers=0):
     test_transforms = torchvision.transforms.Compose([
         torchvision.transforms.ToTensor(),
         torchvision.transforms.Normalize(
-            mean=lightly_data.collate.imagenet_normalize['mean'],
-            std=lightly_data.collate.imagenet_normalize['std'],
+            mean=collate.imagenet_normalize['mean'],
+            std=collate.imagenet_normalize['std'],
         )
     ])
     if name == 'cifar10':
         dataset_cls = torchvision.datasets.CIFAR10
     elif name == 'cifar100':
         dataset_cls = torchvision.datasets.CIFAR100
+    # TODO add support for LSUN dataset
+    # elif name == 'lsun':
+    #    dataset_cls = torchvision.datasets.LSUN
     else:
         raise Exception({'message': f'Unsupported Dataset {name}'})
-    dataset_train_ssl = lightly_data.LightlyDataset.from_torch_dataset(
-        torchvision.datasets.CIFAR10(
-            root='data',
+    dataset_train_ssl = LightlyDataset.from_torch_dataset(
+        dataset_cls(
+            root=data_root,
             train=True,
-            download=True))
-    dataset_train_kNN = lightly_data.LightlyDataset.from_torch_dataset(dataset_cls(
-        root='data',
-        train=True,
-        transform=test_transforms,
-        download=True))
-    dataset_test = lightly_data.LightlyDataset.from_torch_dataset(dataset_cls(
-        root='data',
-        train=False,
-        transform=test_transforms,
-        download=True))
+            download=True)
+    )
+    dataset_train_kNN = LightlyDataset.from_torch_dataset(
+        dataset_cls(
+            root=data_root,
+            train=True,
+            transform=test_transforms,
+            download=True)
+    )
+    dataset_test = LightlyDataset.from_torch_dataset(
+        dataset_cls(
+            root=data_root,
+            train=False,
+            transform=test_transforms,
+            download=True)
+    )
 
     dataloader_train_ssl = DataLoader(
         dataset_train_ssl,

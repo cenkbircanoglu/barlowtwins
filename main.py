@@ -1,5 +1,3 @@
-from multiprocessing import cpu_count
-
 import hydra
 import pytorch_lightning as pl
 import torch
@@ -12,29 +10,22 @@ from loss import BarlowTwinsLoss
 from models.resnet50 import resnet50
 from utils import BenchmarkModule
 
-num_workers = cpu_count() // 2
-max_epochs = 800
-knn_k = 200
-knn_t = 0.1
-classes = 10
-batch_size = 1024
-seed = 1
-
-pl.seed_everything(seed)
-
 # use a GPU if available
-gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+gpus = 1 if torch.cuda.is_available() else 0
 device = 'cuda' if gpus else 'cpu'
+
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 
 class BartonTwins(BenchmarkModule):
-    def __init__(self, dataloader_kNN, gpus, classes, knn_k, knn_t, num_ftrs=512, backbone=None):
+    def __init__(self, dataloader_kNN, gpus, classes, knn_k, knn_t, num_ftrs=512, backbone=None, max_epochs=1):
         super().__init__(dataloader_kNN, gpus, classes, knn_k, knn_t)
         self.backbone = backbone
         # create a simsiam model based on ResNet
         # note that bartontwins has the same architecture
         self.resnet_simsiam = models.SimSiam(self.backbone, num_ftrs=num_ftrs, num_mlp_layers=3)
         self.criterion = BarlowTwinsLoss(device=device)
+        self.max_epochs = max_epochs
 
     def forward(self, x):
         self.resnet_simsiam(x)
@@ -70,12 +61,12 @@ class BartonTwins(BenchmarkModule):
     def configure_optimizers(self):
         optim = torch.optim.SGD(self.resnet_simsiam.parameters(), lr=1e-3,
                                 momentum=0.9, weight_decay=5e-4)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, max_epochs)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, self.max_epochs)
         return [optim], [scheduler]
 
 
 def get_backbone(name):
-    if name in ['resnet-18', 'resnet-50']:
+    if name in ['resnet-9', 'resnet-18', 'resnet-50', 'resnet-101']:
         resnet = models.ResNetGenerator(name)
         return nn.Sequential(
             *list(resnet.children())[:-1],
@@ -87,21 +78,22 @@ def get_backbone(name):
 
 @hydra.main(config_path='./conf', config_name="resnet_18")
 def run_app(cfg: DictConfig) -> None:
+    pl.seed_everything(cfg.seed)
     dataloader_train_ssl, dataloader_train_kNN, dataloader_test = dataset_loader(name=cfg.dataset_name,
                                                                                  batch_size=cfg.batch_size,
-                                                                                 num_workers=cfg.batch_size)
+                                                                                 num_workers=cfg.num_workers,
+                                                                                 data_root=cfg.data_root)
     backbone = get_backbone(cfg.backbone_name)
-    model = BartonTwins(dataloader_train_kNN, gpus=gpus, classes=classes, knn_k=knn_k, knn_t=knn_t,
-                        num_ftrs=cfg.num_ftrs, backbone=backbone)
+    model = BartonTwins(dataloader_train_kNN, gpus=gpus, classes=cfg.classes, knn_k=cfg.knn_k, knn_t=cfg.knn_t,
+                        num_ftrs=cfg.num_ftrs, backbone=backbone, max_epochs=cfg.max_epochs)
     print(model)
-    trainer = pl.Trainer(max_epochs=max_epochs, gpus=gpus,
+    trainer = pl.Trainer(max_epochs=cfg.max_epochs, gpus=gpus,
                          progress_bar_refresh_rate=100)
     trainer.fit(
         model,
         train_dataloader=dataloader_train_ssl,
         val_dataloaders=dataloader_test,
     )
-    trainer.save_checkpoint('trainer.pth')
 
     print(f'Highest test accuracy: {model.max_accuracy:.4f}')
 

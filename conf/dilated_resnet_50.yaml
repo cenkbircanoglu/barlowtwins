@@ -1,10 +1,11 @@
-num_workers: 32
+num_workers: 8
 max_epochs: 800
 knn_k: 200
 knn_t: 0.1
 classes: 10
-batch_size: 1024
+batch_size: 2048
 seed: 1
 dataset_name: cifar10
-backbone: dilated-resnet-50
+backbone_name: dilated-resnet-50
 num_ftrs: 2048
+data_root: ${hydra:runtime.cwd}/data/
